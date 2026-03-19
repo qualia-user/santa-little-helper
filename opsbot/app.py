@@ -14,7 +14,7 @@ slack_app = App(token=settings.SLACK_BOT_TOKEN)
 
 
 @slack_app.command('/ops')
-def handle_ops_command(ack, body, logger):
+def handle_ops_command(ack, body, respond, logger):
     raw_text = body.get('text', '').strip()
     user_id = body.get('user_id', '')
     channel_id = body.get('channel_id')
@@ -26,33 +26,41 @@ def handle_ops_command(ack, body, logger):
         ack({'response_type': 'ephemeral', 'text': str(ex)})
         return
 
-    with get_connection() as conn:
-        try:
-            profile = get_user_profile(conn, user_id)
-        except (ProfileNotFoundError, ProfileInactiveError) as ex:
-            ack({'response_type': 'ephemeral', 'text': str(ex)})
-            return
+    ack()
 
-        if not user_can_run(profile, command.task_name):
-            ack({'response_type': 'ephemeral', 'text': f'You are not allowed to run: {command.task_name}'})
-            return
+    try:
+        with get_connection() as conn:
+            try:
+                profile = get_user_profile(conn, user_id)
+            except (ProfileNotFoundError, ProfileInactiveError) as ex:
+                respond({'response_type': 'ephemeral', 'text': str(ex)})
+                return
 
-        if is_direct_task(command.task_name):
-            ack(build_direct_response(conn, user_id, command))
-            return
+            if not user_can_run(profile, command.task_name):
+                respond({'response_type': 'ephemeral', 'text': f'You are not allowed to run: {command.task_name}'})
+                return
 
-        job_id = job_queue.enqueue_job(
-            conn=conn,
-            job_type=command.task_name,
-            slack_user_id=user_id,
-            channel_id=channel_id,
-            channel_name=channel_name,
-            command_text=command.raw_text,
-            args=command.flags,
-        )
-        position_ahead = job_queue.count_jobs_ahead(conn, job_id)
+            if is_direct_task(command.task_name):
+                respond(build_direct_response(conn, user_id, command))
+                return
+
+        with get_connection(begin_immediate=True) as conn:
+            job_id = job_queue.enqueue_job(
+                conn=conn,
+                job_type=command.task_name,
+                slack_user_id=user_id,
+                channel_id=channel_id,
+                channel_name=channel_name,
+                command_text=command.raw_text,
+                args=command.flags,
+            )
+            position_ahead = job_queue.count_jobs_ahead(conn, job_id)
+
         blocks = slack_ui.queue_accepted_blocks(job_id, position_ahead, command.raw_text)
-        ack({'response_type': 'ephemeral', 'text': f'Job #{job_id} accepted.', 'blocks': blocks})
+        respond({'response_type': 'ephemeral', 'text': f'Job #{job_id} accepted.', 'blocks': blocks})
+    except Exception:
+        logger.exception('Failed to handle /ops command')
+        respond({'response_type': 'ephemeral', 'text': 'Unable to queue your job right now. Please try again shortly.'})
 
 
 @slack_app.action('digest_run_again')
@@ -69,6 +77,7 @@ def handle_digest_run_again(ack, body, client):
         if not user_can_run(profile, 'digest.run'):
             client.chat_postMessage(channel=body['channel']['id'], text='You are not allowed to run digest.run')
             return
+    with get_connection(begin_immediate=True) as conn:
         job_id = job_queue.enqueue_job(
             conn=conn,
             job_type='digest.run',

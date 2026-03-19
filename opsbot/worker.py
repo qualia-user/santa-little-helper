@@ -1,4 +1,5 @@
 import json
+import sqlite3
 import time
 import traceback
 from dataclasses import asdict
@@ -16,8 +17,9 @@ from opsbot.tasks.platform_scan.task import run_platform_scan_task
 initialize_database()
 
 
-def dispatch_job(conn, job):
-    profile = get_user_profile(conn, job['requested_by_slack_user_id'])
+def dispatch_job(job):
+    with get_connection() as conn:
+        profile = get_user_profile(conn, job['requested_by_slack_user_id'])
     flags = json.loads(job['args_json'] or '{}')
 
     if job['job_type'] == 'digest.run':
@@ -52,27 +54,33 @@ def main():
     print('[Worker] Started.')
 
     while True:
-        with get_connection() as conn:
-            set_system_state(conn, 'worker_heartbeat', 'alive')
-            job = job_queue.fetch_next_queued_job(conn)
-            if not job:
-                time.sleep(settings.QUEUE_POLL_SECONDS)
-                continue
-            job_id = int(job['id'])
-            job_queue.mark_job_running(conn, job_id)
-
         try:
-            with get_connection() as conn:
-                profile, result_text, result_json, blocks, summary = dispatch_job(conn, job)
+            with get_connection(begin_immediate=True) as conn:
+                set_system_state(conn, 'worker_heartbeat', 'alive')
+                job = job_queue.fetch_next_queued_job(conn)
+                if not job:
+                    sleep_seconds = settings.QUEUE_POLL_SECONDS
+                else:
+                    job_id = int(job['id'])
+                    job_queue.mark_job_running(conn, job_id)
+                    sleep_seconds = 0.2
+
+            if not job:
+                time.sleep(sleep_seconds)
+                continue
+
+            try:
+                profile, result_text, result_json, blocks, summary = dispatch_job(job)
                 dm_channel = slack_client.ensure_dm_channel(client, profile.slack_user_id)
-                job_queue.set_job_dm_channel(conn, job_id, dm_channel)
                 slack_client.post_blocks(client, dm_channel, result_text, blocks)
-                job_queue.store_job_result(conn, job_id, result_text, result_json, blocks)
-                job_queue.mark_job_succeeded(conn, job_id, result_summary=summary)
-        except Exception as ex:
-            error_text = ''.join(traceback.format_exception_only(type(ex), ex)).strip()
-            with get_connection() as conn:
-                job_queue.mark_job_failed(conn, job_id, error_text)
+                with get_connection(begin_immediate=True) as conn:
+                    job_queue.set_job_dm_channel(conn, job_id, dm_channel)
+                    job_queue.store_job_result(conn, job_id, result_text, result_json, blocks)
+                    job_queue.mark_job_succeeded(conn, job_id, result_summary=summary)
+            except Exception as ex:
+                error_text = ''.join(traceback.format_exception_only(type(ex), ex)).strip()
+                with get_connection(begin_immediate=True) as conn:
+                    job_queue.mark_job_failed(conn, job_id, error_text)
                 try:
                     user_id = job['requested_by_slack_user_id']
                     dm_channel = slack_client.ensure_dm_channel(client, user_id)
@@ -80,7 +88,9 @@ def main():
                 except Exception:
                     pass
 
-        time.sleep(0.2)
+            time.sleep(sleep_seconds)
+        except sqlite3.OperationalError:
+            time.sleep(0.5)
 
 
 if __name__ == '__main__':
