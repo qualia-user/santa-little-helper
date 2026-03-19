@@ -16,16 +16,21 @@ def utc_now_iso() -> str:
 
 def _configure_connection(conn: sqlite3.Connection) -> None:
     conn.row_factory = sqlite3.Row
-    conn.execute(f'PRAGMA busy_timeout = {DB_BUSY_TIMEOUT_MS}')
-    conn.execute('PRAGMA journal_mode = WAL')
-    conn.execute('PRAGMA foreign_keys = ON')
+    conn.execute('PRAGMA journal_mode=WAL')
+    conn.execute(f'PRAGMA busy_timeout={DB_BUSY_TIMEOUT_MS}')
+    conn.execute('PRAGMA foreign_keys=ON')
+
+
+def create_connection() -> sqlite3.Connection:
+    Path(settings.DB_PATH).parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(settings.DB_PATH, timeout=DB_BUSY_TIMEOUT_MS / 1000)
+    _configure_connection(conn)
+    return conn
 
 
 @contextmanager
 def get_connection(begin_immediate: bool = False):
-    Path(settings.DB_PATH).parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(settings.DB_PATH, timeout=DB_BUSY_TIMEOUT_MS / 1000)
-    _configure_connection(conn)
+    conn = create_connection()
     if begin_immediate:
         conn.execute('BEGIN IMMEDIATE')
     try:

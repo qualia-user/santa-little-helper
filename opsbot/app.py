@@ -20,13 +20,15 @@ def handle_ops_command(ack, body, respond, logger):
     channel_id = body.get('channel_id')
     channel_name = body.get('channel_name')
 
+    logger.info('Slash command received', extra={'user_id': user_id, 'channel_id': channel_id, 'command_text': raw_text})
+    ack()
+    logger.info('Slash command ack sent', extra={'user_id': user_id, 'channel_id': channel_id})
+
     try:
         command = parse_command(raw_text)
     except CommandParseError as ex:
-        ack({'response_type': 'ephemeral', 'text': str(ex)})
+        respond({'response_type': 'ephemeral', 'text': str(ex)})
         return
-
-    ack()
 
     try:
         with get_connection() as conn:
@@ -44,23 +46,25 @@ def handle_ops_command(ack, body, respond, logger):
                 respond(build_direct_response(conn, user_id, command))
                 return
 
-        with get_connection(begin_immediate=True) as conn:
-            job_id = job_queue.enqueue_job(
-                conn=conn,
-                job_type=command.task_name,
-                slack_user_id=user_id,
-                channel_id=channel_id,
-                channel_name=channel_name,
-                command_text=command.raw_text,
-                args=command.flags,
-            )
+        logger.info('Queue insert attempt', extra={'user_id': user_id, 'channel_id': channel_id, 'job_type': command.task_name})
+        job_id = job_queue.enqueue_job(
+            job_type=command.task_name,
+            slack_user_id=user_id,
+            channel_id=channel_id,
+            channel_name=channel_name,
+            command_text=command.raw_text,
+            args=command.flags,
+        )
+        logger.info('Queue insert success', extra={'user_id': user_id, 'channel_id': channel_id, 'job_type': command.task_name, 'job_id': job_id})
+
+        with get_connection() as conn:
             position_ahead = job_queue.count_jobs_ahead(conn, job_id)
 
         blocks = slack_ui.queue_accepted_blocks(job_id, position_ahead, command.raw_text)
         respond({'response_type': 'ephemeral', 'text': f'Job #{job_id} accepted.', 'blocks': blocks})
     except Exception:
-        logger.exception('Failed to handle /ops command')
-        respond({'response_type': 'ephemeral', 'text': 'Unable to queue your job right now. Please try again shortly.'})
+        logger.exception('Queue insert failure', extra={'user_id': user_id, 'channel_id': channel_id, 'command_text': raw_text})
+        respond({'response_type': 'ephemeral', 'text': 'Sorry, I could not queue that job right now. Please try again in a moment.'})
 
 
 @slack_app.action('digest_run_again')
@@ -77,16 +81,15 @@ def handle_digest_run_again(ack, body, client):
         if not user_can_run(profile, 'digest.run'):
             client.chat_postMessage(channel=body['channel']['id'], text='You are not allowed to run digest.run')
             return
-    with get_connection(begin_immediate=True) as conn:
-        job_id = job_queue.enqueue_job(
-            conn=conn,
-            job_type='digest.run',
-            slack_user_id=user_id,
-            channel_id=body['channel']['id'],
-            channel_name=None,
-            command_text='digest run',
-            args={},
-        )
+    job_id = job_queue.enqueue_job(
+        job_type='digest.run',
+        slack_user_id=user_id,
+        channel_id=body['channel']['id'],
+        channel_name=None,
+        command_text='digest run',
+        args={},
+    )
+    with get_connection() as conn:
         ahead = job_queue.count_jobs_ahead(conn, job_id)
     client.chat_postMessage(channel=body['channel']['id'], text=f'Queued digest job #{job_id}. Jobs ahead: {ahead}')
 
