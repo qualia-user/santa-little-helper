@@ -4,6 +4,9 @@ import sqlite3
 from opsbot.db import create_connection, utc_now_iso
 
 
+TERMINAL_SUCCESS_STATUSES = ('done', 'succeeded')
+
+
 def write_event(conn: sqlite3.Connection, job_id: int, event_type: str, message: str | None = None) -> None:
     conn.execute(
         'INSERT INTO job_events (job_id, event_type, message, created_at) VALUES (?, ?, ?, ?)',
@@ -26,8 +29,10 @@ def enqueue_job(job_type: str, slack_user_id: str, channel_id: str | None, chann
                 command_text,
                 args_json,
                 status,
-                created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                created_at,
+                retry_count,
+                last_error
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 job_type,
@@ -38,6 +43,8 @@ def enqueue_job(job_type: str, slack_user_id: str, channel_id: str | None, chann
                 json.dumps(args),
                 'queued',
                 now,
+                0,
+                None,
             ),
         )
         job_id = int(cursor.lastrowid)
@@ -69,32 +76,65 @@ def fetch_next_queued_job(conn: sqlite3.Connection):
     ).fetchone()
 
 
+def claim_next_queued_job(conn: sqlite3.Connection):
+    job = fetch_next_queued_job(conn)
+    if not job:
+        return None
+
+    job_id = int(job['id'])
+    started_at = utc_now_iso()
+    cursor = conn.execute(
+        """
+        UPDATE jobs
+        SET status = 'running',
+            started_at = ?,
+            finished_at = NULL
+        WHERE id = ?
+          AND status = 'queued'
+        """,
+        (started_at, job_id),
+    )
+    if cursor.rowcount != 1:
+        return None
+
+    write_event(conn, job_id, 'running', 'Job claimed and started')
+    return conn.execute('SELECT * FROM jobs WHERE id = ?', (job_id,)).fetchone()
+
+
 def get_running_job(conn: sqlite3.Connection):
     return conn.execute(
         "SELECT * FROM jobs WHERE status = 'running' ORDER BY started_at DESC, id DESC LIMIT 1"
     ).fetchone()
 
 
-def mark_job_running(conn: sqlite3.Connection, job_id: int) -> None:
+def mark_job_done(conn: sqlite3.Connection, job_id: int, result_summary: str | None = None) -> None:
     conn.execute(
-        "UPDATE jobs SET status = 'running', started_at = ? WHERE id = ?",
-        (utc_now_iso(), job_id),
-    )
-    write_event(conn, job_id, 'started', 'Job started')
-
-
-def mark_job_succeeded(conn: sqlite3.Connection, job_id: int, result_summary: str | None = None) -> None:
-    conn.execute(
-        "UPDATE jobs SET status = 'succeeded', result_summary = ?, finished_at = ? WHERE id = ?",
+        """
+        UPDATE jobs
+        SET status = 'done',
+            result_summary = ?,
+            last_error = NULL,
+            error_text = NULL,
+            finished_at = ?
+        WHERE id = ?
+        """,
         (result_summary, utc_now_iso(), job_id),
     )
-    write_event(conn, job_id, 'completed', 'Job succeeded')
+    write_event(conn, job_id, 'done', 'Job completed successfully')
 
 
 def mark_job_failed(conn: sqlite3.Connection, job_id: int, error_text: str) -> None:
     conn.execute(
-        "UPDATE jobs SET status = 'failed', error_text = ?, finished_at = ? WHERE id = ?",
-        (error_text, utc_now_iso(), job_id),
+        """
+        UPDATE jobs
+        SET status = 'failed',
+            error_text = ?,
+            last_error = ?,
+            retry_count = COALESCE(retry_count, 0) + 1,
+            finished_at = ?
+        WHERE id = ?
+        """,
+        (error_text, error_text, utc_now_iso(), job_id),
     )
     write_event(conn, job_id, 'failed', error_text)
 
@@ -128,36 +168,36 @@ def store_job_result(conn: sqlite3.Connection, job_id: int, result_text: str, re
 def get_last_result_for_user(conn: sqlite3.Connection, slack_user_id: str, job_type_prefix: str | None = None):
     if job_type_prefix:
         return conn.execute(
-            """
+            f"""
             SELECT jr.*, j.job_type, j.finished_at
             FROM job_results jr
             JOIN jobs j ON j.id = jr.job_id
             WHERE j.requested_by_slack_user_id = ?
-              AND j.status = 'succeeded'
+              AND j.status IN ({','.join('?' for _ in TERMINAL_SUCCESS_STATUSES)})
               AND j.job_type LIKE ?
             ORDER BY j.finished_at DESC, j.id DESC
             LIMIT 1
             """,
-            (slack_user_id, f'{job_type_prefix}%'),
+            (slack_user_id, *TERMINAL_SUCCESS_STATUSES, f'{job_type_prefix}%'),
         ).fetchone()
     return conn.execute(
-        """
+        f"""
         SELECT jr.*, j.job_type, j.finished_at
         FROM job_results jr
         JOIN jobs j ON j.id = jr.job_id
         WHERE j.requested_by_slack_user_id = ?
-          AND j.status = 'succeeded'
+          AND j.status IN ({','.join('?' for _ in TERMINAL_SUCCESS_STATUSES)})
         ORDER BY j.finished_at DESC, j.id DESC
         LIMIT 1
         """,
-        (slack_user_id,),
+        (slack_user_id, *TERMINAL_SUCCESS_STATUSES),
     ).fetchone()
 
 
 def list_recent_jobs_for_user(conn: sqlite3.Connection, slack_user_id: str, limit: int = 5):
     return conn.execute(
         """
-        SELECT id, job_type, status, created_at, started_at, finished_at, result_summary, error_text
+        SELECT id, job_type, status, created_at, started_at, finished_at, result_summary, error_text, retry_count, last_error
         FROM jobs
         WHERE requested_by_slack_user_id = ?
         ORDER BY id DESC

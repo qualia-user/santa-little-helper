@@ -43,12 +43,26 @@ def get_connection(begin_immediate: bool = False):
         conn.close()
 
 
+def _column_exists(conn: sqlite3.Connection, table_name: str, column_name: str) -> bool:
+    rows = conn.execute(f'PRAGMA table_info({table_name})').fetchall()
+    return any(row['name'] == column_name for row in rows)
+
+
+def _apply_job_worker_hardening_migration(conn: sqlite3.Connection) -> None:
+    if not _column_exists(conn, 'jobs', 'retry_count'):
+        conn.execute('ALTER TABLE jobs ADD COLUMN retry_count INTEGER NOT NULL DEFAULT 0')
+    if not _column_exists(conn, 'jobs', 'last_error'):
+        conn.execute('ALTER TABLE jobs ADD COLUMN last_error TEXT')
+    conn.execute("UPDATE jobs SET status = 'done' WHERE status = 'succeeded'")
+
+
 def initialize_database() -> None:
     with get_connection(begin_immediate=True) as conn:
         for filename in MIGRATION_FILES:
             path = settings.MIGRATIONS_DIR / filename
             with open(path, encoding='utf-8') as f:
                 conn.executescript(f.read())
+        _apply_job_worker_hardening_migration(conn)
 
 
 def set_system_state(conn: sqlite3.Connection, key: str, value_text: str) -> None:

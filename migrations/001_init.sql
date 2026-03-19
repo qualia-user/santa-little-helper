@@ -27,6 +27,8 @@ CREATE TABLE IF NOT EXISTS jobs (
     status TEXT NOT NULL,
     result_summary TEXT,
     error_text TEXT,
+    retry_count INTEGER NOT NULL DEFAULT 0,
+    last_error TEXT,
     dm_channel_id TEXT,
     created_at TEXT NOT NULL,
     started_at TEXT,
