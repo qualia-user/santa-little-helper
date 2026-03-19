@@ -1,7 +1,7 @@
 import json
 import sqlite3
 
-from opsbot.db import utc_now_iso
+from opsbot.db import create_connection, utc_now_iso
 
 
 def write_event(conn: sqlite3.Connection, job_id: int, event_type: str, message: str | None = None) -> None:
@@ -11,35 +11,44 @@ def write_event(conn: sqlite3.Connection, job_id: int, event_type: str, message:
     )
 
 
-def enqueue_job(conn: sqlite3.Connection, job_type: str, slack_user_id: str, channel_id: str | None, channel_name: str | None, command_text: str, args: dict) -> int:
-    now = utc_now_iso()
-    cursor = conn.execute(
-        """
-        INSERT INTO jobs (
-            job_type,
-            requested_by_slack_user_id,
-            requested_in_channel_id,
-            requested_in_channel_name,
-            command_text,
-            args_json,
-            status,
-            created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        (
-            job_type,
-            slack_user_id,
-            channel_id,
-            channel_name,
-            command_text,
-            json.dumps(args),
-            'queued',
-            now,
-        ),
-    )
-    job_id = int(cursor.lastrowid)
-    write_event(conn, job_id, 'queued', 'Job queued')
-    return job_id
+def enqueue_job(job_type: str, slack_user_id: str, channel_id: str | None, channel_name: str | None, command_text: str, args: dict) -> int:
+    conn = create_connection()
+    try:
+        conn.execute('BEGIN IMMEDIATE')
+        now = utc_now_iso()
+        cursor = conn.execute(
+            """
+            INSERT INTO jobs (
+                job_type,
+                requested_by_slack_user_id,
+                requested_in_channel_id,
+                requested_in_channel_name,
+                command_text,
+                args_json,
+                status,
+                created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                job_type,
+                slack_user_id,
+                channel_id,
+                channel_name,
+                command_text,
+                json.dumps(args),
+                'queued',
+                now,
+            ),
+        )
+        job_id = int(cursor.lastrowid)
+        write_event(conn, job_id, 'queued', 'Job queued')
+        conn.commit()
+        return job_id
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
 
 
 def count_jobs_ahead(conn: sqlite3.Connection, job_id: int) -> int:
