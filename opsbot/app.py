@@ -2,7 +2,6 @@ from slack_bolt import App
 from slack_bolt.adapter.socket_mode import SocketModeHandler
 
 from opsbot import settings
-from opsbot.commands.handlers import build_direct_response, is_direct_task
 from opsbot.commands.ops_parser import CommandParseError, parse_command
 from opsbot.db import get_connection, initialize_database
 from opsbot.services import job_queue, slack_ui
@@ -11,6 +10,24 @@ from opsbot.services.profiles import ProfileInactiveError, ProfileNotFoundError,
 
 initialize_database()
 slack_app = App(token=settings.SLACK_BOT_TOKEN)
+
+
+def _enqueue_command(*, user_id: str, channel_id: str | None, channel_name: str | None, command_text: str, task_name: str, args: dict, logger):
+    logger.info('Queue insert attempt', extra={'user_id': user_id, 'channel_id': channel_id, 'job_type': task_name})
+    job_id = job_queue.enqueue_job(
+        job_type=task_name,
+        slack_user_id=user_id,
+        channel_id=channel_id,
+        channel_name=channel_name,
+        command_text=command_text,
+        args=args,
+    )
+    logger.info('Queue insert success', extra={'user_id': user_id, 'channel_id': channel_id, 'job_type': task_name, 'job_id': job_id})
+
+    with get_connection() as conn:
+        position_ahead = job_queue.count_jobs_ahead(conn, job_id)
+
+    return job_id, position_ahead
 
 
 @slack_app.command('/ops')
@@ -42,24 +59,15 @@ def handle_ops_command(ack, body, respond, logger):
                 respond({'response_type': 'ephemeral', 'text': f'You are not allowed to run: {command.task_name}'})
                 return
 
-            if is_direct_task(command.task_name):
-                respond(build_direct_response(conn, user_id, command))
-                return
-
-        logger.info('Queue insert attempt', extra={'user_id': user_id, 'channel_id': channel_id, 'job_type': command.task_name})
-        job_id = job_queue.enqueue_job(
-            job_type=command.task_name,
-            slack_user_id=user_id,
+        job_id, position_ahead = _enqueue_command(
+            user_id=user_id,
             channel_id=channel_id,
             channel_name=channel_name,
             command_text=command.raw_text,
+            task_name=command.task_name,
             args=command.flags,
+            logger=logger,
         )
-        logger.info('Queue insert success', extra={'user_id': user_id, 'channel_id': channel_id, 'job_type': command.task_name, 'job_id': job_id})
-
-        with get_connection() as conn:
-            position_ahead = job_queue.count_jobs_ahead(conn, job_id)
-
         blocks = slack_ui.queue_accepted_blocks(job_id, position_ahead, command.raw_text)
         respond({'response_type': 'ephemeral', 'text': f'Job #{job_id} accepted.', 'blocks': blocks})
     except Exception:
@@ -68,7 +76,7 @@ def handle_ops_command(ack, body, respond, logger):
 
 
 @slack_app.action('digest_run_again')
-def handle_digest_run_again(ack, body, client):
+def handle_digest_run_again(ack, body, client, logger):
     ack()
     user_id = body['user']['id']
     with get_connection() as conn:
@@ -81,33 +89,46 @@ def handle_digest_run_again(ack, body, client):
         if not user_can_run(profile, 'digest.run'):
             client.chat_postMessage(channel=body['channel']['id'], text='You are not allowed to run digest.run')
             return
-    job_id = job_queue.enqueue_job(
-        job_type='digest.run',
-        slack_user_id=user_id,
+    job_id, ahead = _enqueue_command(
+        user_id=user_id,
         channel_id=body['channel']['id'],
-        channel_name=None,
+        channel_name=body['channel'].get('name'),
         command_text='digest run',
+        task_name='digest.run',
         args={},
+        logger=logger,
     )
-    with get_connection() as conn:
-        ahead = job_queue.count_jobs_ahead(conn, job_id)
     client.chat_postMessage(channel=body['channel']['id'], text=f'Queued digest job #{job_id}. Jobs ahead: {ahead}')
 
 
 @slack_app.action('digest_show_last')
-def handle_digest_show_last(ack, body, client):
+def handle_digest_show_last(ack, body, client, logger):
     ack()
-    with get_connection() as conn:
-        response = build_direct_response(conn, body['user']['id'], parse_command('digest last'))
-    client.chat_postMessage(channel=body['channel']['id'], text=response.get('text', 'Last digest'), blocks=response.get('blocks'))
+    job_id, ahead = _enqueue_command(
+        user_id=body['user']['id'],
+        channel_id=body['channel']['id'],
+        channel_name=body['channel'].get('name'),
+        command_text='digest last',
+        task_name='digest.last',
+        args={},
+        logger=logger,
+    )
+    client.chat_postMessage(channel=body['channel']['id'], text=f'Queued last digest lookup #{job_id}. Jobs ahead: {ahead}')
 
 
 @slack_app.action('jobs_queue_status')
-def handle_jobs_queue_status(ack, body, client):
+def handle_jobs_queue_status(ack, body, client, logger):
     ack()
-    with get_connection() as conn:
-        response = build_direct_response(conn, body['user']['id'], parse_command('jobs queue'))
-    client.chat_postMessage(channel=body['channel']['id'], text=response.get('text', 'Queue status'), blocks=response.get('blocks'))
+    job_id, ahead = _enqueue_command(
+        user_id=body['user']['id'],
+        channel_id=body['channel']['id'],
+        channel_name=body['channel'].get('name'),
+        command_text='jobs queue',
+        task_name='jobs.queue',
+        args={},
+        logger=logger,
+    )
+    client.chat_postMessage(channel=body['channel']['id'], text=f'Queued queue status lookup #{job_id}. Jobs ahead: {ahead}')
 
 
 def main():
