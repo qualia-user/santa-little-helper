@@ -51,3 +51,6 @@ sudo journalctl -u opsbot-worker.service -f
 ```bash
 python -m opsbot.cli.run_digest --profile-key domagoj --hours 6 --max-emails 10
 ```
+
+## Troubleshooting
+- SQLite lock recovery runbook: `docs/sqlite-lock-troubleshooting.md`
