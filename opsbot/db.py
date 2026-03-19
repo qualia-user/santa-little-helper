@@ -7,26 +7,39 @@ from opsbot import settings
 
 
 MIGRATION_FILES = ['001_init.sql']
+DB_BUSY_TIMEOUT_MS = 5000
 
 
 def utc_now_iso() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace('+00:00', 'Z')
 
 
-@contextmanager
-def get_connection():
-    Path(settings.DB_PATH).parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(settings.DB_PATH)
+def _configure_connection(conn: sqlite3.Connection) -> None:
     conn.row_factory = sqlite3.Row
+    conn.execute(f'PRAGMA busy_timeout = {DB_BUSY_TIMEOUT_MS}')
+    conn.execute('PRAGMA journal_mode = WAL')
+    conn.execute('PRAGMA foreign_keys = ON')
+
+
+@contextmanager
+def get_connection(begin_immediate: bool = False):
+    Path(settings.DB_PATH).parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(settings.DB_PATH, timeout=DB_BUSY_TIMEOUT_MS / 1000)
+    _configure_connection(conn)
+    if begin_immediate:
+        conn.execute('BEGIN IMMEDIATE')
     try:
         yield conn
         conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
     finally:
         conn.close()
 
 
 def initialize_database() -> None:
-    with get_connection() as conn:
+    with get_connection(begin_immediate=True) as conn:
         for filename in MIGRATION_FILES:
             path = settings.MIGRATIONS_DIR / filename
             with open(path, encoding='utf-8') as f:
