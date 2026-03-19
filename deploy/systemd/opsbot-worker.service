@@ -1,0 +1,15 @@
+[Unit]
+Description=OpsBot background worker
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/zugi/email-digest
+EnvironmentFile=/home/zugi/email-digest/.env
+ExecStart=/root/.pyenv/versions/3.12.12/bin/python -m opsbot.worker
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

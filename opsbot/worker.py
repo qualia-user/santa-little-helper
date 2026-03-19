@@ -5,6 +5,8 @@ import traceback
 from dataclasses import asdict
 
 from opsbot import settings
+from opsbot.commands.handlers import build_direct_response, is_direct_task
+from opsbot.commands.ops_parser import parse_command
 from opsbot.db import get_connection, initialize_database, set_system_state
 from opsbot.services import job_queue, slack_client
 from opsbot.services.config_resolver import build_digest_config
@@ -25,6 +27,11 @@ def dispatch_job(job):
     with get_connection() as conn:
         profile = get_user_profile(conn, job['requested_by_slack_user_id'])
     flags = json.loads(job['args_json'] or '{}')
+
+    if is_direct_task(job['job_type']):
+        with get_connection() as conn:
+            response = build_direct_response(conn, job['requested_by_slack_user_id'], parse_command(job['command_text']))
+        return profile, response.get('text', job['command_text']), {}, response.get('blocks'), f"Completed {job['job_type']}"
 
     if job['job_type'] == 'digest.run':
         config = build_digest_config(profile, flags)
@@ -53,6 +60,12 @@ def dispatch_job(job):
     raise ValueError(f"Unsupported job type: {job['job_type']}")
 
 
+def _resolve_result_channel(client, job, profile) -> str:
+    if is_direct_task(job['job_type']) and job['requested_in_channel_id']:
+        return job['requested_in_channel_id']
+    return slack_client.ensure_dm_channel(client, profile.slack_user_id)
+
+
 def main():
     client = slack_client.build_client(settings.SLACK_BOT_TOKEN)
     log('Started.')
@@ -77,11 +90,11 @@ def main():
 
             try:
                 profile, result_text, result_json, blocks, summary = dispatch_job(job)
-                dm_channel = slack_client.ensure_dm_channel(client, profile.slack_user_id)
+                result_channel = _resolve_result_channel(client, job, profile)
                 log(f'Starting job #{job_id} ({job["job_type"]}).')
-                slack_client.post_blocks(client, dm_channel, result_text, blocks)
+                slack_client.post_blocks(client, result_channel, result_text, blocks)
                 with get_connection(begin_immediate=True) as conn:
-                    job_queue.set_job_dm_channel(conn, job_id, dm_channel)
+                    job_queue.set_job_dm_channel(conn, job_id, result_channel)
                     job_queue.store_job_result(conn, job_id, result_text, result_json, blocks)
                     job_queue.mark_job_done(conn, job_id, result_summary=summary)
                 log(f'Job #{job_id} succeeded; status=done.')
@@ -91,9 +104,8 @@ def main():
                 with get_connection(begin_immediate=True) as conn:
                     job_queue.mark_job_failed(conn, job_id, error_details)
                 try:
-                    user_id = job['requested_by_slack_user_id']
-                    dm_channel = slack_client.ensure_dm_channel(client, user_id)
-                    slack_client.post_text(client, dm_channel, f'''Job #{job_id} failed:
+                    result_channel = job['requested_in_channel_id'] or slack_client.ensure_dm_channel(client, job['requested_by_slack_user_id'])
+                    slack_client.post_text(client, result_channel, f'''Job #{job_id} failed:
 {error_details}''')
                 except Exception as notify_ex:
                     log(f'Failed to notify Slack for job #{job_id}: {notify_ex!r}')

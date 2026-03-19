@@ -10,7 +10,7 @@ cp .env.example .env
 ```
 
 ## Run DB init implicitly
-The app and worker both call `initialize_database()` on startup.
+The Slack app and worker both call `initialize_database()` on startup, so either process can safely boot first.
 
 ## Seed a Slack user mapping
 Insert a row into `slack_users` before testing digest commands.
@@ -20,9 +20,31 @@ Insert a row into `slack_users` before testing digest commands.
 python -m opsbot.worker
 ```
 
-## Run the Slack app (Socket Mode)
+## Run the Slack app (Socket Mode / command receiver)
 ```bash
 python -m opsbot.app
+```
+
+## systemd on Raspberry Pi / Linux
+Service files live in `deploy/systemd/`:
+
+- `opsbot-slack.service` runs the Slack Socket Mode receiver.
+- `opsbot-worker.service` runs the background job processor.
+
+Install them with:
+
+```bash
+sudo cp deploy/systemd/opsbot-slack.service /etc/systemd/system/
+sudo cp deploy/systemd/opsbot-worker.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now opsbot-slack.service opsbot-worker.service
+```
+
+Debug with:
+
+```bash
+sudo journalctl -u opsbot-slack.service -f
+sudo journalctl -u opsbot-worker.service -f
 ```
 
 ## Local manual digest test
