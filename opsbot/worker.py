@@ -1,5 +1,5 @@
 import json
-import sqlite3
+import psycopg
 import time
 import traceback
 from dataclasses import asdict
@@ -104,7 +104,7 @@ def main():
         job_id = None
 
         try:
-            with get_connection(begin_immediate=True) as conn:
+            with get_connection() as conn:
                 set_system_state(conn, 'worker_heartbeat', 'alive')
                 job = job_queue.claim_next_queued_job(conn)
 
@@ -121,7 +121,7 @@ def main():
                 result_channel = _resolve_result_channel(client, job, profile)
                 log(f'Starting job #{job_id} ({job["job_type"]}).')
                 slack_client.post_blocks(client, result_channel, result_text, blocks)
-                with get_connection(begin_immediate=True) as conn:
+                with get_connection() as conn:
                     job_queue.set_job_dm_channel(conn, job_id, result_channel)
                     job_queue.store_job_result(conn, job_id, result_text, result_json, blocks)
                     job_queue.mark_job_done(conn, job_id, result_summary=summary)
@@ -129,7 +129,7 @@ def main():
             except Exception as ex:
                 error_details = ''.join(traceback.format_exception(type(ex), ex, ex.__traceback__)).strip()
                 log(f'Job #{job_id} failed: {ex!r}')
-                with get_connection(begin_immediate=True) as conn:
+                with get_connection() as conn:
                     job_queue.mark_job_failed(conn, job_id, error_details)
                 try:
                     result_channel = job['requested_in_channel_id'] or slack_client.ensure_dm_channel(client, job['requested_by_slack_user_id'])
@@ -138,8 +138,8 @@ def main():
                 except Exception as notify_ex:
                     log(f'Failed to notify Slack for job #{job_id}: {notify_ex!r}')
                 continue
-        except sqlite3.OperationalError as ex:
-            log(f'SQLite operational error while polling queue: {ex!r}')
+        except psycopg.Error as ex:
+            log(f'PostgreSQL error while polling queue: {ex!r}')
             time.sleep(0.5)
             continue
         except Exception as ex:

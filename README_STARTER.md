@@ -9,8 +9,8 @@ pip install -r requirements.txt
 cp .env.example .env
 ```
 
-## Run DB init implicitly
-The Slack app and worker both call `initialize_database()` on startup, so either process can safely boot first.
+## Database setup
+Set `DATABASE_URL` in `.env` before starting the app or worker. The PostgreSQL schema is expected to be created manually before first use.
 
 ## Seed a Slack user mapping
 Insert a row into `slack_users` before testing digest commands.
@@ -51,6 +51,3 @@ sudo journalctl -u opsbot-worker.service -f
 ```bash
 python -m opsbot.cli.run_digest --profile-key domagoj --hours 6 --max-emails 10
 ```
-
-## Troubleshooting
-- SQLite lock recovery runbook: `docs/sqlite-lock-troubleshooting.md`
