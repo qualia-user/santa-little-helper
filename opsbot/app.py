@@ -32,6 +32,7 @@ def _enqueue_command(*, user_id: str, channel_id: str | None, channel_name: str 
 
 @slack_app.command('/ops')
 def handle_ops_command(ack, body, respond, logger):
+    logger.info("slash command user_id=%r team_id=%r channel_id=%r", body.get("user_id"), body.get("team_id"), body.get("channel_id"))
     raw_text = body.get('text', '').strip()
     user_id = body.get('user_id', '')
     channel_id = body.get('channel_id')
