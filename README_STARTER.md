@@ -10,7 +10,7 @@ cp .env.example .env
 ```
 
 ## Database setup
-Set `DATABASE_URL` in `.env` before starting the app or worker. The PostgreSQL schema is expected to be created manually before first use.
+Set `DATABASE_URL` in `.env` before starting the app or worker. The app now initializes the PostgreSQL schema automatically on startup.
 
 ## Seed a Slack user mapping
 Insert a row into `slack_users` before testing digest commands.

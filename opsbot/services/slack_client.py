@@ -10,9 +10,9 @@ def ensure_dm_channel(client: WebClient, user_id: str) -> str:
     return response['channel']['id']
 
 
-def post_text(client: WebClient, channel: str, text: str) -> None:
-    client.chat_postMessage(channel=channel, text=text)
+def post_text(client: WebClient, channel: str, text: str):
+    return client.chat_postMessage(channel=channel, text=text)
 
 
-def post_blocks(client: WebClient, channel: str, text: str, blocks: list) -> None:
-    client.chat_postMessage(channel=channel, text=text, blocks=blocks)
+def post_blocks(client: WebClient, channel: str, text: str, blocks: list):
+    return client.chat_postMessage(channel=channel, text=text, blocks=blocks)
