@@ -11,6 +11,7 @@ class ProfileInactiveError(RuntimeError):
     pass
 
 
+
 def _row_to_profile(row) -> UserProfile:
     return UserProfile(
         slack_user_id=row['slack_user_id'],
@@ -27,9 +28,10 @@ def _row_to_profile(row) -> UserProfile:
     )
 
 
+
 def get_user_profile(conn, slack_user_id: str) -> UserProfile:
     row = conn.execute(
-        'SELECT * FROM slack_users WHERE slack_user_id = ?',
+        'SELECT * FROM slack_users WHERE slack_user_id = %s',
         (slack_user_id,),
     ).fetchone()
     if not row:
@@ -39,9 +41,10 @@ def get_user_profile(conn, slack_user_id: str) -> UserProfile:
     return _row_to_profile(row)
 
 
+
 def get_user_profile_by_key(conn, profile_key: str) -> UserProfile:
     row = conn.execute(
-        'SELECT * FROM slack_users WHERE profile_key = ?',
+        'SELECT * FROM slack_users WHERE profile_key = %s',
         (profile_key,),
     ).fetchone()
     if not row:
@@ -49,6 +52,7 @@ def get_user_profile_by_key(conn, profile_key: str) -> UserProfile:
     if not row['is_active']:
         raise ProfileInactiveError(f'Profile inactive: {profile_key}')
     return _row_to_profile(row)
+
 
 
 def user_can_run(profile: UserProfile, task_name: str) -> bool:
