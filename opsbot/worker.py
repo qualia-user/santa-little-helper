@@ -3,12 +3,13 @@ import sqlite3
 import time
 import traceback
 from dataclasses import asdict
+from datetime import datetime, timezone
 
 from opsbot import settings
 from opsbot.commands.handlers import build_direct_response, is_direct_task
 from opsbot.commands.ops_parser import parse_command
-from opsbot.db import get_connection, initialize_database, set_system_state
-from opsbot.services import job_queue, slack_client
+from opsbot.db import get_connection, get_system_state, initialize_database, set_system_state
+from opsbot.services import job_queue, slack_client, slack_ui
 from opsbot.services.config_resolver import build_digest_config
 from opsbot.services.profiles import get_user_profile
 from opsbot.tasks.digest.formatter import compose_digest_blocks
@@ -23,14 +24,41 @@ def log(message: str) -> None:
     print(f'[Worker] {message}', flush=True)
 
 
+def _build_system_health_response() -> dict:
+    with get_connection() as conn:
+        worker_row = get_system_state(conn, 'worker_heartbeat')
+
+    worker_status = 'missing'
+    if worker_row:
+        updated_at = datetime.fromisoformat(worker_row['updated_at'].replace('Z', '+00:00'))
+        age = (datetime.now(timezone.utc) - updated_at).total_seconds()
+        max_age = settings.QUEUE_POLL_SECONDS * 4
+        worker_status = f'alive ({age:.0f}s ago)' if age <= max_age else f'stale ({age:.0f}s ago)'
+
+    from opsbot.commands.handlers import _safe_ollama_health
+
+    ollama_ok, ollama_status = _safe_ollama_health()
+    blocks = slack_ui.health_blocks(
+        db_ok=True,
+        worker_status=worker_status,
+        ollama_ok=ollama_ok,
+        ollama_status=ollama_status,
+    )
+    return {'text': 'System health', 'blocks': blocks}
+
+
 def dispatch_job(job):
     with get_connection() as conn:
         profile = get_user_profile(conn, job['requested_by_slack_user_id'])
     flags = json.loads(job['args_json'] or '{}')
 
     if is_direct_task(job['job_type']):
-        with get_connection() as conn:
-            response = build_direct_response(conn, job['requested_by_slack_user_id'], parse_command(job['command_text']))
+        command = parse_command(job['command_text'])
+        if command.task_name == 'system.health':
+            response = _build_system_health_response()
+        else:
+            with get_connection() as conn:
+                response = build_direct_response(conn, job['requested_by_slack_user_id'], command)
         return profile, response.get('text', job['command_text']), {}, response.get('blocks'), f"Completed {job['job_type']}"
 
     if job['job_type'] == 'digest.run':
