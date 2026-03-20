@@ -7,7 +7,7 @@ from opsbot import settings
 
 
 MIGRATION_FILES = ['001_init.sql']
-DB_BUSY_TIMEOUT_MS = 5000
+DB_BUSY_TIMEOUT_MS = 30000
 
 
 def utc_now_iso() -> str:
@@ -16,14 +16,15 @@ def utc_now_iso() -> str:
 
 def _configure_connection(conn: sqlite3.Connection) -> None:
     conn.row_factory = sqlite3.Row
-    conn.execute('PRAGMA journal_mode=WAL')
-    conn.execute(f'PRAGMA busy_timeout={DB_BUSY_TIMEOUT_MS}')
-    conn.execute('PRAGMA foreign_keys=ON')
+    conn.execute('PRAGMA foreign_keys = ON')
+    conn.execute(f'PRAGMA busy_timeout = {DB_BUSY_TIMEOUT_MS}')
+    conn.execute('PRAGMA journal_mode = WAL')
+    conn.execute('PRAGMA synchronous = NORMAL')
 
 
 def create_connection() -> sqlite3.Connection:
     Path(settings.DB_PATH).parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(settings.DB_PATH, timeout=DB_BUSY_TIMEOUT_MS / 1000)
+    conn = sqlite3.connect(settings.DB_PATH, timeout=30)
     _configure_connection(conn)
     return conn
 
