@@ -28,7 +28,7 @@ def build_digest_config(profile: UserProfile, flags: dict) -> DigestConfig:
         ollama_base_url=settings.OLLAMA_BASE_URL,
         ollama_model=settings.OLLAMA_MODEL,
         ollama_timeout_sec=settings.OLLAMA_TIMEOUT_SEC,
-        lookback_hours=int(flags.get('hours', settings.DEFAULT_LOOKBACK_HOURS)),
-        max_emails=int(flags.get('max_emails', settings.DEFAULT_MAX_EMAILS)),
+        lookback_hours=int(flags.get('hours', profile.lookback_hours or settings.DEFAULT_LOOKBACK_HOURS)),
+        max_emails=int(flags.get('max_emails', profile.max_emails or settings.DEFAULT_MAX_EMAILS)),
         seen_cache_file=str(seen_cache_file),
     )

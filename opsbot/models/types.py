@@ -5,8 +5,6 @@ from typing import Any, Dict, List, Optional
 @dataclass
 class UserProfile:
     slack_user_id: str
-    slack_username: Optional[str]
-    display_name: Optional[str]
     profile_key: str
     imap_host: str
     imap_port: int
@@ -14,7 +12,13 @@ class UserProfile:
     imap_mailbox: str
     imap_use_ssl: bool
     imap_password_env_key: str
-    allowed_tasks: List[str]
+    slack_channel_id: Optional[str] = None
+    lookback_hours: int = 24
+    max_emails: int = 50
+    is_active: bool = True
+    slack_username: Optional[str] = None
+    display_name: Optional[str] = None
+    allowed_tasks: List[str] = field(default_factory=list)
 
 
 @dataclass
