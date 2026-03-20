@@ -12,15 +12,14 @@ initialize_database()
 slack_app = App(token=settings.SLACK_BOT_TOKEN)
 
 
-def _enqueue_command(*, user_id: str, channel_id: str | None, channel_name: str | None, command_text: str, task_name: str, args: dict, logger):
+def _enqueue_command(*, profile_key: str, user_id: str, channel_id: str | None, command_text: str, task_name: str, logger):
     logger.info('Queue insert attempt', extra={'user_id': user_id, 'channel_id': channel_id, 'job_type': task_name})
     job_id = job_queue.enqueue_job(
+        profile_key=profile_key,
         job_type=task_name,
         slack_user_id=user_id,
         channel_id=channel_id,
-        channel_name=channel_name,
         command_text=command_text,
-        args=args,
     )
     logger.info('Queue insert success', extra={'user_id': user_id, 'channel_id': channel_id, 'job_type': task_name, 'job_id': job_id})
 
@@ -36,7 +35,6 @@ def handle_ops_command(ack, body, respond, logger):
     raw_text = body.get('text', '').strip()
     user_id = body.get('user_id', '')
     channel_id = body.get('channel_id')
-    channel_name = body.get('channel_name')
 
     logger.info('Slash command received', extra={'user_id': user_id, 'channel_id': channel_id, 'command_text': raw_text})
     ack()
@@ -61,12 +59,11 @@ def handle_ops_command(ack, body, respond, logger):
                 return
 
         job_id, position_ahead = _enqueue_command(
+            profile_key=profile.profile_key,
             user_id=user_id,
             channel_id=channel_id,
-            channel_name=channel_name,
             command_text=command.raw_text,
             task_name=command.task_name,
-            args=command.flags,
             logger=logger,
         )
         blocks = slack_ui.queue_accepted_blocks(job_id, position_ahead, command.raw_text)
@@ -91,12 +88,11 @@ def handle_digest_run_again(ack, body, client, logger):
             client.chat_postMessage(channel=body['channel']['id'], text='You are not allowed to run digest.run')
             return
     job_id, ahead = _enqueue_command(
+        profile_key=profile.profile_key,
         user_id=user_id,
         channel_id=body['channel']['id'],
-        channel_name=body['channel'].get('name'),
         command_text='digest run',
         task_name='digest.run',
-        args={},
         logger=logger,
     )
     client.chat_postMessage(channel=body['channel']['id'], text=f'Queued digest job #{job_id}. Jobs ahead: {ahead}')
@@ -105,13 +101,14 @@ def handle_digest_run_again(ack, body, client, logger):
 @slack_app.action('digest_show_last')
 def handle_digest_show_last(ack, body, client, logger):
     ack()
+    with get_connection() as conn:
+        profile = get_user_profile(conn, body['user']['id'])
     job_id, ahead = _enqueue_command(
+        profile_key=profile.profile_key,
         user_id=body['user']['id'],
         channel_id=body['channel']['id'],
-        channel_name=body['channel'].get('name'),
         command_text='digest last',
         task_name='digest.last',
-        args={},
         logger=logger,
     )
     client.chat_postMessage(channel=body['channel']['id'], text=f'Queued last digest lookup #{job_id}. Jobs ahead: {ahead}')
@@ -120,13 +117,14 @@ def handle_digest_show_last(ack, body, client, logger):
 @slack_app.action('jobs_queue_status')
 def handle_jobs_queue_status(ack, body, client, logger):
     ack()
+    with get_connection() as conn:
+        profile = get_user_profile(conn, body['user']['id'])
     job_id, ahead = _enqueue_command(
+        profile_key=profile.profile_key,
         user_id=body['user']['id'],
         channel_id=body['channel']['id'],
-        channel_name=body['channel'].get('name'),
         command_text='jobs queue',
         task_name='jobs.queue',
-        args={},
         logger=logger,
     )
     client.chat_postMessage(channel=body['channel']['id'], text=f'Queued queue status lookup #{job_id}. Jobs ahead: {ahead}')

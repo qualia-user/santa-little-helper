@@ -1,4 +1,3 @@
-import json
 import urllib.request
 from datetime import datetime, timezone
 
@@ -30,6 +29,12 @@ def _safe_ollama_health() -> tuple[bool, str]:
         return False, str(ex)
 
 
+def _coerce_timestamp(value):
+    if value is None or isinstance(value, datetime):
+        return value
+    return datetime.fromisoformat(str(value).replace('Z', '+00:00'))
+
+
 def build_direct_response(conn, slack_user_id: str, command) -> dict:
     if command.task_name == 'digest.last':
         row = job_queue.get_last_result_for_user(conn, slack_user_id, job_type_prefix='digest.')
@@ -37,16 +42,9 @@ def build_direct_response(conn, slack_user_id: str, command) -> dict:
             blocks = slack_ui.empty_state_blocks('No previous digest found yet.')
             return {'response_type': 'ephemeral', 'text': 'No previous digest found.', 'blocks': blocks}
 
-        blocks_json = row['slack_blocks_json']
-        if blocks_json:
-            return {
-                'response_type': 'ephemeral',
-                'text': 'Last digest result',
-                'blocks': json.loads(blocks_json),
-            }
-
-        text = row['result_text'] or 'Last digest exists but has no rendered text.'
-        return {'response_type': 'ephemeral', 'text': text}
+        text = row['output_text'] or 'Last digest exists but has no rendered text.'
+        blocks = slack_ui.empty_state_blocks(text)
+        return {'response_type': 'ephemeral', 'text': text, 'blocks': blocks}
 
     if command.task_name == 'jobs.status':
         jobs = job_queue.list_recent_jobs_for_user(conn, slack_user_id, limit=5)
@@ -65,7 +63,7 @@ def build_direct_response(conn, slack_user_id: str, command) -> dict:
         worker_row = get_system_state(conn, 'worker_heartbeat')
         worker_status = 'missing'
         if worker_row:
-            updated_at = datetime.fromisoformat(worker_row['updated_at'].replace('Z', '+00:00'))
+            updated_at = _coerce_timestamp(worker_row['updated_at'])
             age = (datetime.now(timezone.utc) - updated_at).total_seconds()
             worker_status = f'alive ({age:.0f}s ago)' if age <= settings.QUEUE_POLL_SECONDS * 4 else f'stale ({age:.0f}s ago)'
         ollama_ok, ollama_status = _safe_ollama_health()
