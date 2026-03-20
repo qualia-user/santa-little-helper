@@ -1,9 +1,8 @@
-import json
-import psycopg
 import time
 import traceback
-from dataclasses import asdict
 from datetime import datetime, timezone
+
+import psycopg
 
 from opsbot import settings
 from opsbot.commands.handlers import build_direct_response, is_direct_task
@@ -24,13 +23,19 @@ def log(message: str) -> None:
     print(f'[Worker] {message}', flush=True)
 
 
+def _coerce_timestamp(value):
+    if value is None or isinstance(value, datetime):
+        return value
+    return datetime.fromisoformat(str(value).replace('Z', '+00:00'))
+
+
 def _build_system_health_response() -> dict:
     with get_connection() as conn:
         worker_row = get_system_state(conn, 'worker_heartbeat')
 
     worker_status = 'missing'
     if worker_row:
-        updated_at = datetime.fromisoformat(worker_row['updated_at'].replace('Z', '+00:00'))
+        updated_at = _coerce_timestamp(worker_row['updated_at'])
         age = (datetime.now(timezone.utc) - updated_at).total_seconds()
         max_age = settings.QUEUE_POLL_SECONDS * 4
         worker_status = f'alive ({age:.0f}s ago)' if age <= max_age else f'stale ({age:.0f}s ago)'
@@ -50,7 +55,6 @@ def _build_system_health_response() -> dict:
 def dispatch_job(job):
     with get_connection() as conn:
         profile = get_user_profile(conn, job['requested_by_slack_user_id'])
-    flags = json.loads(job['args_json'] or '{}')
 
     if is_direct_task(job['job_type']):
         command = parse_command(job['command_text'])
@@ -59,14 +63,17 @@ def dispatch_job(job):
         else:
             with get_connection() as conn:
                 response = build_direct_response(conn, job['requested_by_slack_user_id'], command)
-        return profile, response.get('text', job['command_text']), {}, response.get('blocks'), f"Completed {job['job_type']}"
+        return profile, response.get('text', job['command_text']), response.get('blocks'), f"Completed {job['job_type']}"
+
+    command = parse_command(job['command_text'])
+    flags = command.flags
 
     if job['job_type'] == 'digest.run':
         config = build_digest_config(profile, flags)
         result = run_digest_task(config)
         blocks = compose_digest_blocks(profile.profile_key, result)
         summary = f'Processed {result.emails_processed} email(s)'
-        return profile, result.digest_text, asdict(result), blocks, summary
+        return profile, result.digest_text, blocks, summary
 
     if job['job_type'] == 'digest.test':
         flags.setdefault('max_emails', 5)
@@ -74,7 +81,7 @@ def dispatch_job(job):
         result = run_digest_task(config)
         blocks = compose_digest_blocks(profile.profile_key, result)
         summary = f'Test processed {result.emails_processed} email(s)'
-        return profile, result.digest_text, asdict(result), blocks, summary
+        return profile, result.digest_text, blocks, summary
 
     if job['job_type'] == 'platform.scan':
         result = run_platform_scan_task()
@@ -83,7 +90,7 @@ def dispatch_job(job):
             {'type': 'header', 'text': {'type': 'plain_text', 'text': 'Platform scan'}},
             {'type': 'section', 'text': {'type': 'mrkdwn', 'text': text}},
         ]
-        return profile, text, result, blocks, 'Platform scan placeholder completed'
+        return profile, text, blocks, 'Platform scan placeholder completed'
 
     raise ValueError(f"Unsupported job type: {job['job_type']}")
 
@@ -117,14 +124,15 @@ def main():
             log(f'Claimed job #{job_id} ({job["job_type"]}); status=running.')
 
             try:
-                profile, result_text, result_json, blocks, summary = dispatch_job(job)
+                profile, result_text, blocks, summary = dispatch_job(job)
                 result_channel = _resolve_result_channel(client, job, profile)
                 log(f'Starting job #{job_id} ({job["job_type"]}).')
-                slack_client.post_blocks(client, result_channel, result_text, blocks)
+                slack_response = slack_client.post_blocks(client, result_channel, result_text, blocks)
+                slack_ts = slack_response.get('ts') if slack_response else None
                 with get_connection() as conn:
                     job_queue.set_job_dm_channel(conn, job_id, result_channel)
-                    job_queue.store_job_result(conn, job_id, result_text, result_json, blocks)
-                    job_queue.mark_job_done(conn, job_id, result_summary=summary)
+                    job_queue.store_job_result(conn, job_id, job['job_type'], result_text, slack_ts=slack_ts)
+                    job_queue.mark_job_done(conn, job_id, result_message=summary)
                 log(f'Job #{job_id} succeeded; status=done.')
             except Exception as ex:
                 error_details = ''.join(traceback.format_exception(type(ex), ex, ex.__traceback__)).strip()
