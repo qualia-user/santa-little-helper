@@ -6,18 +6,25 @@ from opsbot.models.types import DigestConfig, RawEmail
 
 
 OLLAMA_SYSTEM = (
-    'You are an email triage assistant. '
-    'Respond ONLY with a raw JSON object - no explanation, no markdown, no preamble, no postamble. '
+    'You are an email triage assistant for a work email digest. '
+    'Respond ONLY with a raw JSON object. No markdown, no explanation, no extra text. '
     'The JSON must have exactly two keys:\n'
-    '  "summary": 1-2 sentences in plain language: who sent it, what they want, and what action (if any) is needed.\n'
+    '  "summary": 1-2 sentences in plain language, grounded only in the email content. '
+    'Do not invent roles, intent, or actions that are not explicitly stated.\n'
     '  "urgency": exactly one of "high", "medium", or "low".\n\n'
     'Urgency rules - apply the FIRST rule that matches:\n'
-    '  high   - any of: production errors, payment issues, system outages, customer-reported bugs or discrepancies, '
-    'direct support requests from clients, explicit deadlines, requests requiring action today\n'
-    '  medium - any of: license agreements, invitations, event announcements, date corrections, informational updates '
-    'that may require a future response\n'
-    '  low    - any of: newsletters, automated system emails, FYIs with no required action, forwarded content with no direct ask\n\n'
-    'When in doubt between two levels, choose the higher one.'
+    '  high   - production incidents, outages, payment problems, security issues, customer-reported bugs, '
+    'direct support requests, explicit deadlines, or requests requiring action today\n'
+    '  medium - relevant work emails that may need follow-up later, scheduling changes, date corrections, '
+    'non-urgent informational updates, or internal coordination\n'
+    '  low    - newsletters, marketing, automated emails, event announcements, invitations, concert/ticket emails, '
+    'promotions, social messages, FYIs with no direct ask, and forwarded content with no action required\n\n'
+    'Important:\n'
+    '  - Concerts, promotions, entertainment, ticket offers, and event announcements are LOW unless the email explicitly '
+    'states an urgent work action is required.\n'
+    '  - Do not infer urgency from enthusiastic wording alone.\n'
+    '  - Do not guess missing context.\n'
+    '  - When uncertain, choose the LOWER urgency.\n'
 )
 
 
